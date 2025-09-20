@@ -21,11 +21,11 @@ python3 main.py
 ```
 
 ### Tabata
-- Configure preparation, work, rest, rounds, cycles, and cooldown.
+- Configure preparation, work, rest, rounds, cycles, and cooldown. Each duration accepts seconds or mm:ss (e.g., 1:30).
 - The display highlights the current round/cycle and phase (Work/Rest/Cooldown).
 
 ### Boxing
-- Set classic boxing rounds (default 3 min work / 1 min rest).
+- Set classic boxing rounds (default 3 min work / 1 min rest). Work/rest inputs accept seconds or mm:ss.
 - The label always shows the active round and whether you are in Work or Rest.
 
 ### Custom
@@ -35,7 +35,7 @@ python3 main.py
   30, 10
   60, 0
   ```
-- Each line represents a Work/Rest pair (rest is optional and defaults to 0). The timer executes the sequence in order.
+- Each line represents a Work/Rest pair (rest is optional and defaults to 0). You can write values as seconds or mm:ss (e.g., 0:45). The timer executes the sequence in order.
 
 ### Settings
 - Pick the notification sound (WAV) using the file picker or reset to the bundled `assets/beep.wav`.

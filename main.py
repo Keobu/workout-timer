@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import array
 import json
+import platform
+import shutil
+import subprocess
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Callable, Iterable, List
 
 import customtkinter as ctk
 from customtkinter import filedialog
@@ -69,15 +72,29 @@ class SettingsStore:
 
 
 class SoundPlayer:
-    """Plays the configured notification sound."""
+    """Plays the configured notification sound with graceful fallbacks."""
 
-    def __init__(self, settings: SoundSettings, fallback_path: Path) -> None:
+    def __init__(
+        self,
+        settings: SoundSettings,
+        fallback_path: Path,
+        *,
+        on_fail: Callable[[], None] | None = None,
+    ) -> None:
         self._fallback_path = fallback_path
         self._settings = settings
+        self._on_fail = on_fail
         self._raw_data: bytes | None = None
         self._sample_width: int = 0
         self._channels: int = 0
         self._frame_rate: int = 0
+        self._play_obj: sa.PlayObject | None = None
+        self._active_path: Path | None = None
+        self._afplay_path = (
+            Path(shutil.which("afplay"))
+            if platform.system() == "Darwin" and shutil.which("afplay")
+            else None
+        )
         self._load_wave(settings.sound_path)
 
     def update_settings(self, settings: SoundSettings) -> None:
@@ -85,30 +102,49 @@ class SoundPlayer:
         self._load_wave(settings.sound_path)
 
     def play(self) -> None:
+        if self._afplay_path and self._play_with_afplay():
+            return
+
         if not self._raw_data:
+            self._fallback()
             return
         volume = self._settings.normalized_volume()
         if volume <= 0.0:
             return
         data = self._apply_volume(volume)
         try:
-            sa.play_buffer(data, self._channels, self._sample_width, self._frame_rate)
+            self._play_obj = sa.play_buffer(
+                data, self._channels, self._sample_width, self._frame_rate
+            )
         except Exception:
-            # Silently ignore playback failures to avoid breaking the timer loop.
-            pass
+            self._fallback()
+
+    def _fallback(self) -> None:
+        if self._on_fail is not None:
+            try:
+                self._on_fail()
+            except Exception:
+                pass
 
     def _apply_volume(self, volume: float) -> bytes:
-        raw = self._raw_data or b''
+        raw = self._raw_data or b""
         if volume >= 0.999:
             return raw
         sample_width = self._sample_width
         if sample_width == 1:
-            return self._scale_samples(raw, volume, 127, -128, 'b')
+            return self._scale_samples(raw, volume, 127, -128, "b")
         if sample_width == 2:
-            return self._scale_samples(raw, volume, 32767, -32768, 'h')
+            return self._scale_samples(raw, volume, 32767, -32768, "h")
         return raw
 
-    def _scale_samples(self, data: bytes, volume: float, max_val: int, min_val: int, typecode: str) -> bytes:
+    def _scale_samples(
+        self,
+        data: bytes,
+        volume: float,
+        max_val: int,
+        min_val: int,
+        typecode: str,
+    ) -> bytes:
         arr = array.array(typecode)
         arr.frombytes(data)
         for idx, value in enumerate(arr):
@@ -132,6 +168,7 @@ class SoundPlayer:
                     self._sample_width = wav_file.getsampwidth()
                     self._frame_rate = wav_file.getframerate()
                     self._raw_data = wav_file.readframes(wav_file.getnframes())
+                    self._active_path = Path(candidate)
                     return
             except Exception:
                 continue
@@ -140,6 +177,28 @@ class SoundPlayer:
         self._sample_width = 0
         self._channels = 0
         self._frame_rate = 0
+        self._active_path = path if (self._afplay_path and path.exists()) else None
+
+    def _play_with_afplay(self) -> bool:
+        if self._afplay_path is None or self._active_path is None:
+            return False
+        volume = max(0.0, min(self._settings.normalized_volume(), 1.0))
+        if volume <= 0.0:
+            return True
+        try:
+            subprocess.Popen(
+                [
+                    str(self._afplay_path),
+                    "-v",
+                    f"{volume:.2f}",
+                    str(self._active_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            return False
 
 
 class WorkoutTimerApp(ctk.CTk):
@@ -162,11 +221,19 @@ class WorkoutTimerApp(ctk.CTk):
             "Tabata": {},
             "Boxing": {},
         }
+        self._total_labels: dict[str, dict[str, ctk.CTkLabel]] = {
+            "Tabata": {},
+            "Boxing": {},
+            "Custom": {},
+        }
         self._custom_text: ctk.CTkTextbox | None = None
+        self._tab_command = None
 
         self._settings_store = SettingsStore(SETTINGS_PATH, DEFAULT_SOUND_PATH)
         self._settings = self._settings_store.load()
-        self._sound_player = SoundPlayer(self._settings, DEFAULT_SOUND_PATH)
+        self._sound_player = SoundPlayer(
+            self._settings, DEFAULT_SOUND_PATH, on_fail=self.bell
+        )
 
         self._sound_path_var = ctk.StringVar(value=str(self._settings.sound_path))
         self._volume_var = ctk.StringVar(value=f"{int(self._settings.normalized_volume() * 100)}")
@@ -174,6 +241,7 @@ class WorkoutTimerApp(ctk.CTk):
 
         self._build_widgets()
         self._apply_volume_to_slider()
+        self._update_mode_totals()
 
     def _build_widgets(self) -> None:
         self._main_tabs = ctk.CTkTabview(self)
@@ -188,6 +256,12 @@ class WorkoutTimerApp(ctk.CTk):
     def _build_timer_tab(self, parent: ctk.CTkFrame) -> None:
         self._mode_tabs = ctk.CTkTabview(parent)
         self._mode_tabs.pack(padx=10, pady=(10, 10), fill="both", expand=False)
+
+        segmented_button = getattr(self._mode_tabs, "_segmented_button", None)
+        default_command = getattr(self._mode_tabs, "_set_tab", None)
+        if segmented_button is not None and default_command is not None:
+            self._tab_command = default_command
+            segmented_button.configure(command=self._on_mode_change)
 
         tab_tabata = self._mode_tabs.add("Tabata")
         self._build_tabata_inputs(tab_tabata)
@@ -276,7 +350,25 @@ class WorkoutTimerApp(ctk.CTk):
             var = ctk.StringVar(value=default)
             entry = ctk.CTkEntry(parent, textvariable=var, width=110)
             entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+            var.trace_add("write", lambda *_args, m="Tabata": self._update_mode_totals(m))
             self._entries["Tabata"][key] = var
+
+        summary_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        summary_frame.grid(row=len(inputs), column=0, columnspan=2, padx=5, pady=(10, 5), sticky="w")
+
+        hint = ctk.CTkLabel(
+            summary_frame,
+            text="Insert seconds or mm:ss (e.g. 1:30)",
+            text_color="#A0A0A0",
+        )
+        hint.pack(anchor="w", pady=(0, 4))
+
+        work_label = ctk.CTkLabel(summary_frame, text="Work total: 00:00")
+        work_label.pack(anchor="w")
+        rest_label = ctk.CTkLabel(summary_frame, text="Rest total: 00:00")
+        rest_label.pack(anchor="w")
+
+        self._total_labels["Tabata"] = {"work": work_label, "rest": rest_label}
 
     def _build_boxing_inputs(self, parent: ctk.CTkFrame) -> None:
         inputs = [
@@ -290,7 +382,25 @@ class WorkoutTimerApp(ctk.CTk):
             var = ctk.StringVar(value=default)
             entry = ctk.CTkEntry(parent, textvariable=var, width=110)
             entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+            var.trace_add("write", lambda *_args, m="Boxing": self._update_mode_totals(m))
             self._entries["Boxing"][key] = var
+
+        summary_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        summary_frame.grid(row=len(inputs), column=0, columnspan=2, padx=5, pady=(10, 5), sticky="w")
+
+        hint = ctk.CTkLabel(
+            summary_frame,
+            text="Insert seconds or mm:ss (e.g. 3:00)",
+            text_color="#A0A0A0",
+        )
+        hint.pack(anchor="w", pady=(0, 4))
+
+        work_label = ctk.CTkLabel(summary_frame, text="Work total: 00:00")
+        work_label.pack(anchor="w")
+        rest_label = ctk.CTkLabel(summary_frame, text="Rest total: 00:00")
+        rest_label.pack(anchor="w")
+
+        self._total_labels["Boxing"] = {"work": work_label, "rest": rest_label}
 
     def _build_custom_inputs(self, parent: ctk.CTkFrame) -> None:
         info = (
@@ -303,6 +413,33 @@ class WorkoutTimerApp(ctk.CTk):
         self._custom_text = ctk.CTkTextbox(parent, width=260, height=160)
         self._custom_text.grid(row=1, column=0, padx=5, pady=5)
         self._custom_text.insert("1.0", "45, 15\n30, 10\n60, 0")
+        self._custom_text.bind("<<Modified>>", self._on_custom_modified)
+
+        summary_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        summary_frame.grid(row=2, column=0, padx=5, pady=(10, 5), sticky="w")
+
+        hint = ctk.CTkLabel(
+            summary_frame,
+            text="Intervals accept seconds or mm:ss per value",
+            text_color="#A0A0A0",
+        )
+        hint.pack(anchor="w", pady=(0, 4))
+
+        work_label = ctk.CTkLabel(summary_frame, text="Work total: 00:00")
+        work_label.pack(anchor="w")
+        rest_label = ctk.CTkLabel(summary_frame, text="Rest total: 00:00")
+        rest_label.pack(anchor="w")
+
+        self._total_labels["Custom"] = {"work": work_label, "rest": rest_label}
+
+    def _on_custom_modified(self, event: object) -> None:
+        widget = getattr(event, "widget", None)
+        if widget is not None:
+            try:
+                widget.edit_modified(False)
+            except Exception:
+                pass
+        self._update_mode_totals("Custom")
 
     def start_timer(self) -> None:
         if self._main_tabs.get() != "Timer":
@@ -387,22 +524,20 @@ class WorkoutTimerApp(ctk.CTk):
         self._time_label.configure(text=message)
 
     def _read_tabata_config(self) -> TabataConfig:
-        entries = self._entries["Tabata"]
         return TabataConfig(
-            preparation=self._get_int(entries["preparation"], name="Preparation", allow_zero=True),
-            work=self._get_int(entries["work"], name="Work", positive=True),
-            rest=self._get_int(entries["rest"], name="Rest", allow_zero=True),
-            rounds=self._get_int(entries["rounds"], name="Rounds", positive=True),
-            cycles=self._get_int(entries["cycles"], name="Cycles", positive=True),
-            cooldown=self._get_int(entries["cooldown"], name="Cooldown", allow_zero=True),
+            preparation=self._get_duration("Tabata", "preparation", "Preparation", allow_zero=True),
+            work=self._get_duration("Tabata", "work", "Work", positive=True),
+            rest=self._get_duration("Tabata", "rest", "Rest", allow_zero=True),
+            rounds=self._get_int(self._entries["Tabata"]["rounds"], name="Rounds", positive=True),
+            cycles=self._get_int(self._entries["Tabata"]["cycles"], name="Cycles", positive=True),
+            cooldown=self._get_duration("Tabata", "cooldown", "Cooldown", allow_zero=True),
         )
 
     def _read_boxing_config(self) -> BoxingConfig:
-        entries = self._entries["Boxing"]
         return BoxingConfig(
-            work=self._get_int(entries["work"], name="Work", positive=True),
-            rest=self._get_int(entries["rest"], name="Rest", allow_zero=True),
-            rounds=self._get_int(entries["rounds"], name="Rounds", positive=True),
+            work=self._get_duration("Boxing", "work", "Work", positive=True),
+            rest=self._get_duration("Boxing", "rest", "Rest", allow_zero=True),
+            rounds=self._get_int(self._entries["Boxing"]["rounds"], name="Rounds", positive=True),
         )
 
     def _read_custom_intervals(self) -> List[tuple[int, int]]:
@@ -422,10 +557,11 @@ class WorkoutTimerApp(ctk.CTk):
             if len(parts) not in (1, 2):
                 raise ValueError(f"Line {idx}: expected 'work rest' values")
             try:
-                work = int(parts[0])
-                rest = int(parts[1]) if len(parts) == 2 else 0
+                work = self._parse_duration_string(parts[0], f"Line {idx} work")
+                rest_value = parts[1] if len(parts) == 2 else '0'
+                rest = self._parse_duration_string(rest_value, f"Line {idx} rest")
             except ValueError as exc:
-                raise ValueError(f"Line {idx}: invalid integer value") from exc
+                raise ValueError(str(exc)) from exc
             if work <= 0:
                 raise ValueError(f"Line {idx}: work must be > 0")
             if rest < 0:
@@ -436,6 +572,118 @@ class WorkoutTimerApp(ctk.CTk):
             raise ValueError("Provide at least one interval")
 
         return intervals
+
+    def _update_mode_totals(self, mode: str | None = None) -> None:
+        modes = [mode] if mode else list(self._total_labels.keys())
+        for target in modes:
+            phases = self._safe_phases_for_mode(target)
+            self._apply_totals(target, phases)
+
+    def _safe_phases_for_mode(self, mode: str) -> List[Phase] | None:
+        try:
+            if mode == "Tabata":
+                config = self._read_tabata_config()
+                return TabataTimer(config).phases
+            if mode == "Boxing":
+                config = self._read_boxing_config()
+                return BoxingTimer(config).phases
+            if mode == "Custom":
+                if self._custom_text is None:
+                    return None
+                intervals = self._read_custom_intervals()
+                return CustomTimer(intervals).phases
+        except ValueError:
+            return None
+        return None
+
+    def _apply_totals(self, mode: str, phases: List[Phase] | None) -> None:
+        labels = self._total_labels.get(mode)
+        if not labels:
+            return
+        if not phases:
+            labels["work"].configure(text="Work total: --")
+            labels["rest"].configure(text="Rest total: --")
+            return
+        work_seconds, rest_seconds = self._calculate_totals(phases)
+        labels["work"].configure(
+            text=f"Work total: {self._format_duration(work_seconds)}"
+        )
+        labels["rest"].configure(
+            text=f"Rest total: {self._format_duration(rest_seconds)}"
+        )
+
+    @staticmethod
+    def _calculate_totals(phases: Iterable[Phase]) -> tuple[int, int]:
+        work = 0
+        rest = 0
+        for phase in phases:
+            label = phase.label.lower()
+            if label.startswith("work"):
+                work += phase.duration
+            elif label.startswith("rest"):
+                rest += phase.duration
+        return work, rest
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        if seconds <= 0:
+            return "00:00"
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _get_duration(
+        self,
+        mode: str,
+        key: str,
+        name: str,
+        *,
+        positive: bool = False,
+        allow_zero: bool = False,
+    ) -> int:
+        entries = self._entries.get(mode)
+        if entries is None or key not in entries:
+            raise ValueError(f"Missing entry for {mode}.{key}")
+        raw = entries[key].get().strip()
+        seconds = self._parse_duration_string(raw, name)
+        if positive:
+            if seconds <= 0:
+                raise ValueError(f"{name} must be > 0")
+            return seconds
+        if allow_zero:
+            if seconds < 0:
+                raise ValueError(f"{name} must be >= 0")
+            return seconds
+        if seconds <= 0:
+            raise ValueError(f"{name} must be > 0")
+        return seconds
+
+    @staticmethod
+    def _parse_duration_string(raw: str, name: str) -> int:
+        cleaned = raw.strip().lower()
+        if not cleaned:
+            raise ValueError(f"{name} must be provided")
+        if ":" in cleaned:
+            if cleaned.endswith("s") or cleaned.endswith("m"):
+                raise ValueError(f"{name} must use mm:ss or seconds")
+            parts = cleaned.split(":")
+            if not all(part.isdigit() for part in parts):
+                raise ValueError(f"{name} must use mm:ss or seconds")
+            value = 0
+            for part in parts:
+                value = value * 60 + int(part)
+            return value
+        multiplier = 1
+        if cleaned.endswith("m"):
+            multiplier = 60
+            cleaned = cleaned[:-1]
+        elif cleaned.endswith("s"):
+            cleaned = cleaned[:-1]
+        if not cleaned or not cleaned.isdigit():
+            raise ValueError(f"{name} must be a number of seconds or mm:ss")
+        return int(cleaned) * multiplier
 
     def _get_int(
         self,
