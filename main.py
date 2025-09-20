@@ -1,4 +1,4 @@
-"""Entry point per l'app Workout Timer con supporto CLI e GUI Tabata."""
+"""Entry point per l'app Workout Timer con supporto CLI, Tabata e Boxing."""
 
 from __future__ import annotations
 
@@ -21,13 +21,20 @@ class TabataConfig:
 
 
 @dataclass
+class BoxingConfig:
+    work: int
+    rest: int
+    rounds: int
+
+
+@dataclass
 class Phase:
     label: str
     duration: int
 
 
 class WorkoutTimerApp(ctk.CTk):
-    """GUI che permette di avviare un timer Tabata configurabile."""
+    """GUI che permette di avviare un timer Tabata o Boxing configurabile."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -42,29 +49,19 @@ class WorkoutTimerApp(ctk.CTk):
         self._current_phase_index: int = 0
         self._remaining: int = 0
 
-        self._entries: dict[str, ctk.StringVar] = {}
+        self._entries: dict[str, dict[str, ctk.StringVar]] = {"Tabata": {}, "Boxing": {}}
 
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        form_frame = ctk.CTkFrame(self)
-        form_frame.pack(padx=20, pady=(20, 10), fill="both")
+        self._mode_tabs = ctk.CTkTabview(self)
+        self._mode_tabs.pack(padx=20, pady=(20, 10), fill="both", expand=False)
 
-        inputs = [
-            ("Preparation (s)", "preparation", "10"),
-            ("Work (s)", "work", "20"),
-            ("Rest (s)", "rest", "10"),
-            ("Rounds", "rounds", "8"),
-            ("Cycles", "cycles", "1"),
-            ("Cooldown (s)", "cooldown", "0"),
-        ]
+        tab_tabata = self._mode_tabs.add("Tabata")
+        self._build_tabata_inputs(tab_tabata)
 
-        for row, (label, key, default) in enumerate(inputs):
-            ctk.CTkLabel(form_frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="e")
-            var = ctk.StringVar(value=default)
-            entry = ctk.CTkEntry(form_frame, textvariable=var, width=100)
-            entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
-            self._entries[key] = var
+        tab_boxing = self._mode_tabs.add("Boxing")
+        self._build_boxing_inputs(tab_boxing)
 
         self._time_label = ctk.CTkLabel(self, text="00:00", font=("Helvetica", 40))
         self._time_label.pack(padx=20, pady=(10, 10))
@@ -78,17 +75,52 @@ class WorkoutTimerApp(ctk.CTk):
         stop_button = ctk.CTkButton(button_frame, text="Stop", command=self.stop_timer)
         stop_button.pack(side="left", padx=10)
 
+    def _build_tabata_inputs(self, parent: ctk.CTkFrame) -> None:
+        inputs = [
+            ("Preparation (s)", "preparation", "10"),
+            ("Work (s)", "work", "20"),
+            ("Rest (s)", "rest", "10"),
+            ("Rounds", "rounds", "8"),
+            ("Cycles", "cycles", "1"),
+            ("Cooldown (s)", "cooldown", "0"),
+        ]
+
+        for row, (label, key, default) in enumerate(inputs):
+            ctk.CTkLabel(parent, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="e")
+            var = ctk.StringVar(value=default)
+            entry = ctk.CTkEntry(parent, textvariable=var, width=100)
+            entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+            self._entries["Tabata"][key] = var
+
+    def _build_boxing_inputs(self, parent: ctk.CTkFrame) -> None:
+        inputs = [
+            ("Work (s)", "work", "180"),
+            ("Rest (s)", "rest", "60"),
+            ("Rounds", "rounds", "3"),
+        ]
+
+        for row, (label, key, default) in enumerate(inputs):
+            ctk.CTkLabel(parent, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="e")
+            var = ctk.StringVar(value=default)
+            entry = ctk.CTkEntry(parent, textvariable=var, width=100)
+            entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+            self._entries["Boxing"][key] = var
+
     def start_timer(self) -> None:
-        config = self._read_config()
-        if config is None:
+        mode = self._mode_tabs.get()
+
+        if mode == "Tabata":
+            config = self._read_tabata_config()
+            phases = self._build_tabata_phases(config) if config else None
+        else:
+            config = self._read_boxing_config()
+            phases = self._build_boxing_phases(config) if config else None
+
+        if not phases:
             self._time_label.configure(text="Invalid configuration")
             return
 
-        self._phases = self._build_phases(config)
-        if not self._phases:
-            self._time_label.configure(text="Nothing to run")
-            return
-
+        self._phases = phases
         self._current_phase_index = 0
         self._start_phase()
 
@@ -133,15 +165,16 @@ class WorkoutTimerApp(ctk.CTk):
         display_time = self._format_time(max(self._remaining, 0))
         self._time_label.configure(text=f"{phase.label} - {display_time}")
 
-    def _read_config(self) -> TabataConfig | None:
+    def _read_tabata_config(self) -> TabataConfig | None:
         try:
-            preparation = self._require_non_negative_int("preparation")
-            work = self._require_positive_int("work")
-            rest = self._require_non_negative_int("rest")
-            rounds = self._require_positive_int("rounds")
-            cycles = self._require_positive_int("cycles")
-            cooldown = self._require_non_negative_int("cooldown")
-        except ValueError:
+            entries = self._entries["Tabata"]
+            preparation = self._require_non_negative_int(entries["preparation"])
+            work = self._require_positive_int(entries["work"])
+            rest = self._require_non_negative_int(entries["rest"])
+            rounds = self._require_positive_int(entries["rounds"])
+            cycles = self._require_positive_int(entries["cycles"])
+            cooldown = self._require_non_negative_int(entries["cooldown"])
+        except (ValueError, KeyError):
             return None
 
         return TabataConfig(
@@ -153,7 +186,21 @@ class WorkoutTimerApp(ctk.CTk):
             cooldown=cooldown,
         )
 
-    def _build_phases(self, config: TabataConfig) -> list[Phase]:
+    def _read_boxing_config(self) -> BoxingConfig | None:
+        try:
+            entries = self._entries["Boxing"]
+            work = self._require_positive_int(entries["work"])
+            rest = self._require_non_negative_int(entries["rest"])
+            rounds = self._require_positive_int(entries["rounds"])
+        except (ValueError, KeyError):
+            return None
+
+        return BoxingConfig(work=work, rest=rest, rounds=rounds)
+
+    def _build_tabata_phases(self, config: TabataConfig | None) -> list[Phase] | None:
+        if config is None:
+            return None
+
         phases: list[Phase] = []
         if config.preparation > 0:
             phases.append(Phase("Preparation", config.preparation))
@@ -161,27 +208,38 @@ class WorkoutTimerApp(ctk.CTk):
         for cycle in range(1, config.cycles + 1):
             for round_ in range(1, config.rounds + 1):
                 cycle_suffix = f" Cycle {cycle}" if config.cycles > 1 else ""
-                label = f"Work Round {round_}{cycle_suffix}"
-                phases.append(Phase(label, config.work))
+                phases.append(Phase(f"Work Round {round_}{cycle_suffix}", config.work))
 
                 is_last_round = round_ == config.rounds and cycle == config.cycles
                 if config.rest > 0 and not is_last_round:
-                    rest_label = f"Rest Round {round_}{cycle_suffix}"
-                    phases.append(Phase(rest_label, config.rest))
+                    phases.append(Phase(f"Rest Round {round_}{cycle_suffix}", config.rest))
 
         if config.cooldown > 0:
             phases.append(Phase("Cooldown", config.cooldown))
 
         return phases
 
-    def _require_positive_int(self, key: str) -> int:
-        value = int(self._entries[key].get())
+    def _build_boxing_phases(self, config: BoxingConfig | None) -> list[Phase] | None:
+        if config is None:
+            return None
+
+        phases: list[Phase] = []
+        for round_ in range(1, config.rounds + 1):
+            phases.append(Phase(f"Work Round {round_}", config.work))
+            is_last_round = round_ == config.rounds
+            if config.rest > 0 and not is_last_round:
+                phases.append(Phase(f"Rest Round {round_}", config.rest))
+
+        return phases
+
+    def _require_positive_int(self, var: ctk.StringVar) -> int:
+        value = int(var.get())
         if value <= 0:
             raise ValueError
         return value
 
-    def _require_non_negative_int(self, key: str) -> int:
-        value = int(self._entries[key].get())
+    def _require_non_negative_int(self, var: ctk.StringVar) -> int:
+        value = int(var.get())
         if value < 0:
             raise ValueError
         return value
@@ -199,7 +257,7 @@ class WorkoutTimerApp(ctk.CTk):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Workout Timer con interfaccia grafica Tabata e modalità CLI opzionale",
+        description="Workout Timer con interfaccia grafica Tabata/Boxing e modalità CLI opzionale",
     )
     parser.add_argument(
         "seconds",
