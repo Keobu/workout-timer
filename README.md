@@ -1,6 +1,5 @@
 # Workout Timer
 
-![Workout Timer GUI](docs/workout-timer-gui.png)
 
 <div align="center">
   <img src="docs/workout-timer-1.png" alt="Boxing mode" width="48%" />
