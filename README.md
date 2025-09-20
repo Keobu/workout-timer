@@ -1,11 +1,11 @@
 # Workout Timer
 
-Applicazione Python per gestire sessioni di allenamento con un semplice countdown da terminale. Il progetto userà in futuro `customtkinter` per una GUI moderna, ma al momento offre solo un timer base in console.
+Python application for managing workout sessions with a simple terminal countdown. The project will eventually use `customtkinter` for a modern GUI, but for now it offers only a basic console timer.
 
-## Avvio rapido
+## Quick Start
 
 ```bash
-python main.py 45 --label "Riscaldamento"
+python main.py 45 --label "Warm-up"
 ```
 
-Il comando precedente avvia un countdown di 45 secondi mostrando l'etichetta opzionale.
+The command above starts a 45-second countdown and displays the optional label.
