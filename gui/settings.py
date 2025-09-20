@@ -1,4 +1,4 @@
-"""Settings panel and audio utilities for Workout Timer GUI."""
+"""Settings management and sound handling for Workout Timer."""
 
 from __future__ import annotations
 
@@ -8,130 +8,151 @@ import platform
 import shutil
 import subprocess
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Dict, Iterable
 
 import customtkinter as ctk
 from customtkinter import filedialog
 import simpleaudio as sa
 
 
+_PHASES = ["prep", "work", "rest", "cooldown", "finish"]
+
+
 @dataclass
 class SoundSettings:
-    """Configuration for notification audio."""
-
-    sound_path: Path
-    volume: float
+    theme: str = "Dark"
+    font_scale: float = 1.0
+    volume: float = 0.8
+    phase_sounds: Dict[str, str] = field(default_factory=dict)
 
     def normalized_volume(self) -> float:
         return max(0.0, min(self.volume, 1.0))
 
+    def as_dict(self) -> dict:
+        return {
+            "theme": self.theme,
+            "font_scale": self.font_scale,
+            "volume": self.normalized_volume(),
+            "phase_sounds": self.phase_sounds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict, defaults: Dict[str, Path]) -> "SoundSettings":
+        volume = float(data.get("volume", 0.8))
+        theme = data.get("theme", "Dark")
+        font_scale = float(data.get("font_scale", 1.0))
+        stored = data.get("phase_sounds", {})
+        phase_sounds: Dict[str, str] = {}
+        for phase, default_path in defaults.items():
+            phase_sounds[phase] = stored.get(phase, str(default_path))
+        return cls(theme=theme, font_scale=font_scale, volume=volume, phase_sounds=phase_sounds)
+
 
 class SettingsStore:
-    """Load and persist settings from/to disk."""
-
-    def __init__(self, path: Path, default_sound: Path) -> None:
+    def __init__(self, path: Path, sound_defaults: Dict[str, Path]) -> None:
         self._path = path
-        self._default_sound = default_sound
+        self._defaults = sound_defaults
 
     def load(self) -> SoundSettings:
         if not self._path.exists():
-            return SoundSettings(self._default_sound, 1.0)
+            return SoundSettings.from_dict({}, self._defaults)
         try:
             data = json.loads(self._path.read_text())
-            sound_path = Path(data.get("sound_path", str(self._default_sound)))
-            volume = float(data.get("volume", 1.0))
-        except (OSError, ValueError, TypeError):
-            return SoundSettings(self._default_sound, 1.0)
-        return SoundSettings(sound_path, max(0.0, min(volume, 1.0)))
+        except (OSError, json.JSONDecodeError):
+            return SoundSettings.from_dict({}, self._defaults)
+        return SoundSettings.from_dict(data, self._defaults)
 
     def save(self, settings: SoundSettings) -> None:
-        payload = {
-            "sound_path": str(settings.sound_path),
-            "volume": settings.normalized_volume(),
-        }
+        payload = settings.as_dict()
         self._path.write_text(json.dumps(payload, indent=2))
 
 
 class SoundPlayer:
-    """Plays the configured notification sound with graceful fallbacks."""
+    """Handles playback with per-phase audio and graceful fallbacks."""
 
     def __init__(
         self,
+        defaults: Dict[str, Path],
         settings: SoundSettings,
-        fallback_path: Path,
         *,
         on_fail: Callable[[], None] | None = None,
     ) -> None:
-        self._fallback_path = fallback_path
-        self._settings = settings
+        self._defaults = defaults
         self._on_fail = on_fail
-        self._raw_data: bytes | None = None
-        self._sample_width: int = 0
-        self._channels: int = 0
-        self._frame_rate: int = 0
-        self._play_obj: sa.PlayObject | None = None
-        self._active_path: Path | None = None
+        self._settings = settings
+        self._cache: Dict[Path, bytes] = {}
+        self._metadata: Dict[Path, tuple[int, int, int]] = {}
         self._afplay_path = (
             Path(shutil.which("afplay"))
             if platform.system() == "Darwin" and shutil.which("afplay")
             else None
         )
-        self._load_wave(settings.sound_path)
+        self.update_settings(settings)
 
     def update_settings(self, settings: SoundSettings) -> None:
         self._settings = settings
-        self._load_wave(settings.sound_path)
+        self._load_all()
 
-    def play(self) -> None:
-        if self._afplay_path and self._play_with_afplay():
+    def play(self, phase: str, *, override_path: Path | None = None) -> None:
+        path = override_path or Path(self._settings.phase_sounds.get(phase, ""))
+        if not path or not path.is_file():
+            path = self._defaults.get(phase)
+        if not path:
             return
-
-        if not self._raw_data:
+        if self._afplay_path and self._play_with_afplay(path):
+            return
+        raw = self._cache.get(path)
+        meta = self._metadata.get(path)
+        if not raw or not meta:
             self._fallback()
             return
-
         volume = self._settings.normalized_volume()
         if volume <= 0.0:
             return
-
-        data = self._apply_volume(volume)
+        channels, sample_width, frame_rate = meta
+        data = self._apply_volume(raw, sample_width, volume)
         try:
-            self._play_obj = sa.play_buffer(
-                data, self._channels, self._sample_width, self._frame_rate
-            )
+            sa.play_buffer(data, channels, sample_width, frame_rate)
         except Exception:
             self._fallback()
 
-    def _fallback(self) -> None:
-        if self._on_fail is not None:
-            try:
-                self._on_fail()
-            except Exception:
-                pass
+    # Internal helpers ---------------------------------------------------
 
-    def _apply_volume(self, volume: float) -> bytes:
-        raw = self._raw_data or b""
+    def _load_all(self) -> None:
+        self._cache.clear()
+        self._metadata.clear()
+        selected = {
+            Path(p)
+            for p in self._settings.phase_sounds.values()
+            if p and Path(p).suffix.lower() == ".wav"
+        }
+        paths = selected | set(self._defaults.values())
+        for path in paths:
+            if not path or not path.is_file():
+                continue
+            try:
+                with wave.open(str(path), "rb") as wav_file:
+                    channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    frame_rate = wav_file.getframerate()
+                    raw = wav_file.readframes(wav_file.getnframes())
+            except Exception:
+                continue
+            self._cache[path] = raw
+            self._metadata[path] = (channels, sample_width, frame_rate)
+
+    def _apply_volume(self, raw: bytes, sample_width: int, volume: float) -> bytes:
         if volume >= 0.999:
             return raw
-        sample_width = self._sample_width
-        if sample_width == 1:
-            return self._scale_samples(raw, volume, 127, -128, "b")
-        if sample_width == 2:
-            return self._scale_samples(raw, volume, 32767, -32768, "h")
-        return raw
-
-    def _scale_samples(
-        self,
-        data: bytes,
-        volume: float,
-        max_val: int,
-        min_val: int,
-        typecode: str,
-    ) -> bytes:
+        if sample_width not in (1, 2):
+            return raw
+        typecode = "b" if sample_width == 1 else "h"
+        max_val = 127 if sample_width == 1 else 32767
+        min_val = -128 if sample_width == 1 else -32768
         arr = array.array(typecode)
-        arr.frombytes(data)
+        arr.frombytes(raw)
         for idx, value in enumerate(arr):
             scaled = int(value * volume)
             if scaled > max_val:
@@ -141,33 +162,10 @@ class SoundPlayer:
             arr[idx] = scaled
         return arr.tobytes()
 
-    def _load_wave(self, path: Path) -> None:
-        candidate_paths = [path]
-        if path != self._fallback_path:
-            candidate_paths.append(self._fallback_path)
-
-        for candidate in candidate_paths:
-            try:
-                with wave.open(str(candidate), "rb") as wav_file:
-                    self._channels = wav_file.getnchannels()
-                    self._sample_width = wav_file.getsampwidth()
-                    self._frame_rate = wav_file.getframerate()
-                    self._raw_data = wav_file.readframes(wav_file.getnframes())
-                    self._active_path = Path(candidate)
-                    return
-            except Exception:
-                continue
-
-        self._raw_data = None
-        self._sample_width = 0
-        self._channels = 0
-        self._frame_rate = 0
-        self._active_path = path if (self._afplay_path and path.exists()) else None
-
-    def _play_with_afplay(self) -> bool:
-        if self._afplay_path is None or self._active_path is None:
+    def _play_with_afplay(self, path: Path) -> bool:
+        if self._afplay_path is None:
             return False
-        volume = max(0.0, min(self._settings.normalized_volume(), 1.0))
+        volume = self._settings.normalized_volume()
         if volume <= 0.0:
             return True
         try:
@@ -176,7 +174,7 @@ class SoundPlayer:
                     str(self._afplay_path),
                     "-v",
                     f"{volume:.2f}",
-                    str(self._active_path),
+                    str(path),
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -185,9 +183,16 @@ class SoundPlayer:
         except Exception:
             return False
 
+    def _fallback(self) -> None:
+        if self._on_fail is not None:
+            try:
+                self._on_fail()
+            except Exception:
+                pass
+
 
 class SettingsPanel(ctk.CTkFrame):
-    """Encapsulates the settings page UI and logic."""
+    """Interactive settings page with auto-saving preferences."""
 
     def __init__(
         self,
@@ -196,144 +201,181 @@ class SettingsPanel(ctk.CTkFrame):
         store: SettingsStore,
         player: SoundPlayer,
         initial_settings: SoundSettings,
-        default_sound: Path,
+        sound_library: Iterable[Path],
+        sound_defaults: Dict[str, Path],
+        on_change: Callable[[SoundSettings], None],
     ) -> None:
         super().__init__(master)
         self._store = store
         self._player = player
-        self._default_sound = default_sound
-        self._current_settings = initial_settings
+        self._on_change = on_change
+        self._settings = initial_settings
+        self._pending_after: str | None = None
+        self._defaults = sound_defaults
 
-        self._sound_path_var = ctk.StringVar(value=str(initial_settings.sound_path))
-        self._volume_var = ctk.StringVar(
-            value=f"{int(initial_settings.normalized_volume() * 100)}"
-        )
-        self._status_var = ctk.StringVar(value="")
+        self._sound_options = self._build_sound_options(sound_library)
+        self._phase_vars: Dict[str, ctk.StringVar] = {}
+        self._menus: Dict[str, ctk.CTkOptionMenu] = {}
+
+        self._status_var = ctk.StringVar(master=self, value="")
+        self._theme_var = ctk.StringVar(master=self, value=self._settings.theme)
+        self._font_var = ctk.DoubleVar(master=self, value=self._settings.font_scale)
+        self._volume_var = ctk.DoubleVar(master=self, value=self._settings.volume * 100)
 
         self._build()
-        self._apply_volume_to_slider()
+
+    def _build_sound_options(self, library: Iterable[Path]) -> Dict[str, Path]:
+        options: Dict[str, Path] = {}
+        for path in list(library):
+            options[path.stem.replace("_", " ").title()] = path
+        for default_path in self._defaults.values():
+            if default_path not in options.values():
+                options[default_path.stem.replace("_", " ").title()] = default_path
+        return dict(sorted(options.items()))
 
     def _build(self) -> None:
         self.grid_columnconfigure(1, weight=1)
 
-        sound_label = ctk.CTkLabel(self, text="Notification sound (WAV):")
-        sound_label.grid(row=0, column=0, padx=5, pady=(15, 5), sticky="e")
+        theme_label = ctk.CTkLabel(self, text="Theme")
+        theme_label.grid(row=0, column=0, padx=8, pady=(16, 8), sticky="e")
 
-        self._sound_entry = ctk.CTkEntry(self, textvariable=self._sound_path_var, width=240)
-        self._sound_entry.grid(row=0, column=1, padx=5, pady=(15, 5), sticky="we")
+        theme_menu = ctk.CTkOptionMenu(
+            self,
+            values=["Dark", "Light", "System"],
+            variable=self._theme_var,
+            command=lambda _v: self._commit(),
+        )
+        theme_menu.grid(row=0, column=1, padx=8, pady=(16, 8), sticky="w")
 
-        browse_button = ctk.CTkButton(self, text="Browse", command=self._browse, width=90)
-        browse_button.grid(row=0, column=2, padx=5, pady=(15, 5))
+        font_label = ctk.CTkLabel(self, text="Font Size")
+        font_label.grid(row=1, column=0, padx=8, pady=8, sticky="e")
+        font_slider = ctk.CTkSlider(
+            self,
+            from_=0.8,
+            to=1.3,
+            number_of_steps=10,
+            variable=self._font_var,
+            command=lambda _v: self._commit_delayed(),
+        )
+        font_slider.grid(row=1, column=1, padx=8, pady=8, sticky="we")
 
         volume_label = ctk.CTkLabel(self, text="Volume (%)")
-        volume_label.grid(row=1, column=0, padx=5, pady=5, sticky="e")
-
-        self._volume_slider = ctk.CTkSlider(
+        volume_label.grid(row=2, column=0, padx=8, pady=8, sticky="e")
+        volume_slider = ctk.CTkSlider(
             self,
             from_=0,
             to=100,
             number_of_steps=100,
-            command=self._on_volume_slider,
+            variable=self._volume_var,
+            command=lambda _v: self._commit_delayed(),
         )
-        self._volume_slider.grid(row=1, column=1, padx=5, pady=5, sticky="we")
+        volume_slider.grid(row=2, column=1, padx=8, pady=8, sticky="we")
 
-        self._volume_entry = ctk.CTkEntry(self, textvariable=self._volume_var, width=60)
-        self._volume_entry.grid(row=1, column=2, padx=5, pady=5, sticky="w")
-        self._volume_entry.bind("<FocusOut>", self._on_volume_entry)
-        self._volume_entry.bind("<Return>", self._on_volume_entry)
+        row = 3
+        for phase in _PHASES:
+            display = phase.title()
+            selected = self._display_name_for_path(Path(self._settings.phase_sounds.get(phase, "")))
+            var = ctk.StringVar(master=self, value=selected)
+            self._phase_vars[phase] = var
+            label = ctk.CTkLabel(self, text=f"{display} Sound")
+            label.grid(row=row, column=0, padx=8, pady=8, sticky="e")
+            menu = ctk.CTkOptionMenu(
+                self,
+                variable=var,
+                values=list(self._sound_options.keys()) + ["Browse…"],
+                command=lambda value, phase=phase: self._on_sound_changed(phase, value),
+                width=200,
+            )
+            menu.grid(row=row, column=1, padx=8, pady=8, sticky="w")
+            self._menus[phase] = menu
 
-        button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.grid(row=2, column=0, columnspan=3, padx=5, pady=(10, 5))
+            play_button = ctk.CTkButton(
+                self,
+                text="▶",
+                width=36,
+                command=lambda p=phase: self._play_phase_preview(p),
+            )
+            play_button.grid(row=row, column=2, padx=8, pady=8, sticky="w")
+            row += 1
 
-        reset_button = ctk.CTkButton(button_frame, text="Reset to Default", command=self._reset)
-        reset_button.pack(side="left", padx=5)
+        status_label = ctk.CTkLabel(self, textvariable=self._status_var, text_color="#7DD3FC")
+        status_label.grid(row=row, column=0, columnspan=3, padx=8, pady=(12, 6), sticky="w")
 
-        test_button = ctk.CTkButton(button_frame, text="Test Sound", command=self._test)
-        test_button.pack(side="left", padx=5)
+        add_button = ctk.CTkButton(self, text="Add Custom Sound", command=self._browse_custom)
+        add_button.grid(row=row + 1, column=0, columnspan=3, padx=8, pady=(6, 16), sticky="we")
 
-        save_button = ctk.CTkButton(button_frame, text="Save Settings", command=self._save)
-        save_button.pack(side="left", padx=5)
+    # Event handlers -----------------------------------------------------
 
-        status_label = ctk.CTkLabel(self, textvariable=self._status_var, text_color="green")
-        status_label.grid(row=3, column=0, columnspan=3, padx=5, pady=(5, 10), sticky="w")
+    def _display_name_for_path(self, path: Path | None) -> str:
+        if path is None:
+            return "--"
+        for name, option_path in self._sound_options.items():
+            if option_path == path:
+                return name
+        return path.stem.title()
 
-    # Public API ---------------------------------------------------------
+    def _on_sound_changed(self, phase: str, name: str) -> None:
+        if name == "Browse…":
+            file_path = filedialog.askopenfilename(
+                title="Select WAV",
+                filetypes=[("WAV files", "*.wav")],
+            )
+            if not file_path:
+                return
+            path = Path(file_path)
+            display_name = path.stem.replace("_", " ").title()
+            self._sound_options[display_name] = path
+            self._phase_vars[phase].set(display_name)
+        else:
+            path = self._sound_options[name]
+            self._phase_vars[phase].set(name)
+        self._refresh_menus()
+        self._commit()
 
-    def clear_status(self) -> None:
-        self._status_var.set("")
+    def _play_phase_preview(self, phase: str) -> None:
+        display = self._phase_vars[phase].get()
+        path = self._sound_options.get(display) or self._defaults.get(phase)
+        self._player.play(phase, override_path=path if path and path.is_file() else None)
 
-    @property
-    def current_settings(self) -> SoundSettings:
-        return self._current_settings
-
-    # Internal helpers ---------------------------------------------------
-
-    def _apply_volume_to_slider(self) -> None:
-        try:
-            value = int(float(self._volume_var.get()))
-        except ValueError:
-            value = int(self._current_settings.normalized_volume() * 100)
-        self._volume_slider.set(max(0, min(100, value)))
-
-    def _browse(self) -> None:
+    def _browse_custom(self) -> None:
         file_path = filedialog.askopenfilename(
-            title="Select sound",
-            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+            title="Add custom WAV",
+            filetypes=[("WAV files", "*.wav")],
         )
-        if file_path:
-            self._sound_path_var.set(file_path)
-            self.clear_status()
-
-    def _reset(self) -> None:
-        self._sound_path_var.set(str(self._default_sound))
-        self.clear_status()
-
-    def _on_volume_slider(self, value: float) -> None:
-        self._volume_var.set(f"{int(float(value))}")
-        self.clear_status()
-
-    def _on_volume_entry(self, _event: object) -> None:
-        try:
-            value = float(self._volume_var.get())
-        except ValueError:
-            value = self._current_settings.normalized_volume() * 100
-        value = max(0.0, min(100.0, value))
-        self._volume_var.set(f"{int(value)}")
-        self._volume_slider.set(value)
-        self.clear_status()
-
-    def _gather(self) -> SoundSettings:
-        sound_str = self._sound_path_var.get().strip() or str(self._default_sound)
-        sound_path = Path(sound_str).expanduser()
-        if not sound_path.is_file():
-            raise ValueError("Sound file not found")
-        try:
-            volume_percent = float(self._volume_var.get())
-        except ValueError as exc:
-            raise ValueError("Volume must be between 0 and 100") from exc
-        if not 0.0 <= volume_percent <= 100.0:
-            raise ValueError("Volume must be between 0 and 100")
-        volume = volume_percent / 100.0
-        return SoundSettings(sound_path, volume)
-
-    def _test(self) -> None:
-        try:
-            settings = self._gather()
-        except ValueError as error:
-            self._status_var.set(str(error))
+        if not file_path:
             return
-        self._player.update_settings(settings)
-        self._player.play()
-        self._status_var.set("Test sound played")
+        path = Path(file_path)
+        display_name = path.stem.replace("_", " ").title()
+        self._sound_options[display_name] = path
+        # Do not assign automatically; user can choose from dropdowns
+        self._status_var.set(f"Added {display_name}")
+        self._refresh_menus()
 
-    def _save(self) -> None:
-        try:
-            settings = self._gather()
-        except ValueError as error:
-            self._status_var.set(str(error))
-            return
+    def _commit_delayed(self) -> None:
+        if self._pending_after is not None:
+            try:
+                self.after_cancel(self._pending_after)
+            except Exception:
+                pass
+        self._pending_after = self.after(350, self._commit)
 
+    def _commit(self) -> None:
+        self._pending_after = None
+        settings = SoundSettings(
+            theme=self._theme_var.get(),
+            font_scale=float(self._font_var.get()),
+            volume=float(self._volume_var.get()) / 100.0,
+            phase_sounds={
+                phase: str(self._sound_options.get(self._phase_vars[phase].get(), self._defaults.get(phase, "")))
+                for phase in _PHASES
+            },
+        )
+        self._settings = settings
         self._store.save(settings)
-        self._player.update_settings(settings)
-        self._current_settings = settings
-        self._status_var.set("Settings saved")
+        self._status_var.set("Preferences saved")
+        self._on_change(settings)
+
+    def _refresh_menus(self) -> None:
+        values = list(self._sound_options.keys()) + ["Browse…"]
+        for menu in self._menus.values():
+            menu.configure(values=values)

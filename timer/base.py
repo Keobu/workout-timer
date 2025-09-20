@@ -14,10 +14,13 @@ class Phase:
 
     label: str
     duration: int
+    kind: str = "work"
 
     def __post_init__(self) -> None:
         if self.duration < 0:
             raise ValueError("Phase duration must be >= 0 seconds")
+        if not self.kind:
+            raise ValueError("Phase kind must be a non-empty string")
 
 
 class WorkoutTimer:
@@ -95,18 +98,30 @@ class TabataTimer(WorkoutTimer):
     def _build_phases(config: TabataConfig) -> List[Phase]:
         phases: List[Phase] = []
         if config.preparation > 0:
-            phases.append(Phase("Preparation", config.preparation))
+            phases.append(Phase("Preparation", config.preparation, "prep"))
 
         for cycle in range(1, config.cycles + 1):
             cycle_suffix = f" Cycle {cycle}" if config.cycles > 1 else ""
             for round_idx in range(1, config.rounds + 1):
-                phases.append(Phase(f"Work Round {round_idx}{cycle_suffix}", config.work))
+                phases.append(
+                    Phase(
+                        f"Work Round {round_idx}{cycle_suffix}",
+                        config.work,
+                        "work",
+                    )
+                )
                 is_last = cycle == config.cycles and round_idx == config.rounds
                 if config.rest > 0 and not is_last:
-                    phases.append(Phase(f"Rest Round {round_idx}{cycle_suffix}", config.rest))
+                    phases.append(
+                        Phase(
+                            f"Rest Round {round_idx}{cycle_suffix}",
+                            config.rest,
+                            "rest",
+                        )
+                    )
 
         if config.cooldown > 0:
-            phases.append(Phase("Cooldown", config.cooldown))
+            phases.append(Phase("Cooldown", config.cooldown, "cooldown"))
 
         return phases
 
@@ -137,9 +152,9 @@ class BoxingTimer(WorkoutTimer):
     def _build_phases(config: BoxingConfig) -> List[Phase]:
         phases: List[Phase] = []
         for round_idx in range(1, config.rounds + 1):
-            phases.append(Phase(f"Work Round {round_idx}", config.work))
+            phases.append(Phase(f"Work Round {round_idx}", config.work, "work"))
             if config.rest > 0 and round_idx < config.rounds:
-                phases.append(Phase(f"Rest Round {round_idx}", config.rest))
+                phases.append(Phase(f"Rest Round {round_idx}", config.rest, "rest"))
         return phases
 
 
@@ -162,8 +177,8 @@ class CustomTimer(WorkoutTimer):
             if rest < 0:
                 raise ValueError("Rest duration in custom intervals must be >= 0")
 
-            phases.append(Phase(f"Work Interval {idx}", work))
+            phases.append(Phase(f"Work Interval {idx}", work, "work"))
             if rest > 0 and idx < len(intervals):
-                phases.append(Phase(f"Rest Interval {idx}", rest))
+                phases.append(Phase(f"Rest Interval {idx}", rest, "rest"))
 
         return phases

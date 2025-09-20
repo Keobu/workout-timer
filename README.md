@@ -2,6 +2,23 @@
 
 ![Workout Timer GUI](docs/workout-timer-gui.png)
 
+<div align="center">
+  <img src="docs/workout-timer-1.png" alt="Boxing mode" width="48%" />
+  <img src="docs/workout-timer-2.png" alt="Custom mode" width="48%" />
+</div>
+
+<div align="center">
+  <img src="docs/workout-timer-3.png" alt="Tabata mode" width="48%" />
+  <img src="docs/workout-timer-4.png" alt="Settings page" width="48%" />
+</div>
+
+> **Quick tour**
+>
+> - **Sidebar navigation** sulla sinistra per passare tra Tabata, Boxing, Custom e Settings.
+> - **Timer centrale** mostra fase corrente, colore e animazioni al cambio di segmento.
+> - **Card riassuntiva** in basso a destra riepiloga il totale di lavoro/recupero e la durata della sessione.
+> - **Control panel** Start/Stop/Reset sempre in vista, con icone e stati disabilitati quando opportuno.
+
 Python application that delivers configurable workout timers via GUI and CLI. The interface now features live duration summaries, customizable notification sounds, and a responsive layout that stays readable as you tweak parameters. The CLI keeps the original console countdown for lightweight usage.
 
 ## Highlights
@@ -9,6 +26,14 @@ Python application that delivers configurable workout timers via GUI and CLI. Th
 - Live work/rest totals that update instantly when you edit inputs in any mode.
 - Sound notifications with volume control, preview, and automatic macOS fallback playback.
 - Responsive CustomTkinter UI with dedicated tabs for modes and settings to keep the workflow tidy.
+
+## User Experience
+
+- **Modern dark theme** with teal accents, adaptive light/dark toggle, and scalable typography for better readability at any distance.
+- **Sidebar navigation** that keeps Tabata, Boxing, Custom, and Settings one click away, highlighting the active workflow.
+- **Phase-aware feedback**: background colors, subtle animations, and distinct sounds for prep/work/rest/cooldown/finish keep you on rhythm.
+- **Session insights** popup summarises work vs recovery time, rounds completed, and lets you save the run to `history.json`.
+- **Responsive layout** automatically stacks controls on narrow windows and spreads them on wide desktops for an uncluttered view.
 
 ## Requirements
 
@@ -27,30 +52,33 @@ python3 main.py
 ```
 
 ### Tabata
-- Configure preparation, work, rest, rounds, cycles, and cooldown. Each duration accepts seconds, values with suffix (`90s`, `2m`), or `mm:ss` (e.g., `1:30`).
-- The display highlights the current round/cycle and phase (Work/Rest/Cooldown) while the summary panel tracks total work and rest time.
+- Configura preparation, work, rest, rounds, cycles e cooldown. Ogni campo accetta secondi, suffissi (`90s`, `2m`) o formato `mm:ss` (es. `1:30`).
+- Il timer centrale cambia colore per fase e la card in basso (vedi immagine *Tabata mode*) tiene d’occhio lavoro, recupero e durata totale.
+- Ideale per protocolli HIIT con cicli ripetuti; i round/cicli impostati vengono riportati anche nel riepilogo finale.
 
 ### Boxing
-- Set classic boxing rounds (default 3 min work / 1 min rest). Work/rest inputs accept seconds or `mm:ss`.
-- The label always shows the active round and whether you are in Work or Rest, and totals keep you aware of scheduled workload.
+- Imposta i classici round da ring (default 3′ work / 1′ rest) o crea combinazioni personalizzate.
+- L’interfaccia evidenzia l’attività corrente (Work/Rest) con badge colorati e aggiorna il totale di workload (screenshot *Boxing mode*).
+- Il popup finale indica quante riprese sono state completate e quanto tempo complessivo è stato dedicato al recupero.
 
 ### Custom
-- Provide your own list of intervals in the multiline field, one per line, e.g.:
+- Costruisci una sequenza libera inserendo coppie `work, rest` nella textarea (una per linea), ad esempio:
   ```
   1:00, 0:30
   45, 15
   2m, 30s
   ```
-- Each line represents a Work/Rest pair (rest is optional and defaults to 0). The timer executes the sequence in order and refreshes totals on every edit.
+- Ogni riga rappresenta una coppia lavoro/recupero (rest opzionale, default 0). L’app calcola subito totali e durata complessiva (screenshot *Custom mode*).
+- Perfetto per superset o routine con pattern non ripetitivi; puoi salvare la sessione una volta conclusa.
 
-Use **Start** to launch the selected program and **Stop** to reset the timer back to `00:00`.
+Use **Start** to launch the selected program, **Stop** to pause, and **Reset** to return to `00:00`.
 
 ## Settings
 
-- Pick the notification sound (WAV) with the file picker or reset to the bundled `assets/beep.wav`.
-- Adjust volume via slider or numeric entry (0–100%).
-- Use **Test Sound** to preview without saving; the app falls back to a system beep if playback fails.
-- Hit **Save Settings** to persist your choices in `settings.json` and immediately apply them to the running timer.
+- Scegli tema (Dark/Light/System) e scala i font con uno slider per rendere il timer leggibile anche da lontano.
+- Associa suoni diversi a prep/work/rest/cooldown/finish selezionandoli dalla dropdown o caricando nuovi WAV (screenshot *Settings page*).
+- Usa **Test Sound** per l’anteprima; se la riproduzione fallisce l’app utilizza automaticamente un beep di fallback.
+- Le preferenze vengono salvate istantaneamente in `settings.json` e applicate alla GUI senza riavvii.
 
 ## CLI Usage
 
@@ -60,9 +88,10 @@ Retain the console countdown with the `--cli` flag:
 python3 main.py --cli 45 --label Warmup
 ```
 
-This prints the remaining time in the terminal, useful for scripted or quick runs.
+This prints the remaining time in the terminal, useful for scripted or quick runs or background automation.
 
 ## Configuration Files
 
 - `settings.json` records the sound path and volume for notifications.
 - `assets/beep.wav` provides the default beep bundled with the application.
+- `history.json` keeps the optional saved summaries from completed sessions.

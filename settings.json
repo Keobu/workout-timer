@@ -1,4 +1,12 @@
 {
-  "sound_path": "/Users/keombuselli/Work-Timer/assets/beep.wav",
-  "volume": 1.0
+  "theme": "System",
+  "font_scale": 0.9,
+  "volume": 1.0,
+  "phase_sounds": {
+    "prep": "/Users/keombuselli/Work-Timer/assets/sounds/cooldown.wav",
+    "work": "/Users/keombuselli/Work-Timer/assets/sounds/work.wav",
+    "rest": "/Users/keombuselli/Work-Timer/assets/sounds/rest.wav",
+    "cooldown": "/Users/keombuselli/Work-Timer/assets/sounds/cooldown.wav",
+    "finish": "/Users/keombuselli/Work-Timer/assets/sounds/finish.wav"
+  }
 }
