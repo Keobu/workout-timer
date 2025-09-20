@@ -1,8 +1,8 @@
 # Workout Timer
 
-![Workout Timer GUI](docs/workout-timer-gui.png)
+![Workout Timer GUI](docs/workout%20timer.png)
 
-Python application that delivers configurable workout timers via GUI and CLI. The GUI offers Tabata, Boxing, and Custom presets with live phase updates, while the CLI keeps the original console countdown.
+Python application that delivers configurable workout timers via GUI and CLI. The GUI offers Tabata, Boxing, and Custom presets with live phase updates, plus a Settings page for sound customization. The CLI keeps the original console countdown.
 
 ## Requirements
 
@@ -37,6 +37,11 @@ python3 main.py
   ```
 - Each line represents a Work/Rest pair (rest is optional and defaults to 0). The timer executes the sequence in order.
 
+### Settings
+- Pick the notification sound (WAV) using the file picker or reset to the bundled `assets/beep.wav`.
+- Adjust volume with the slider or numeric entry (0–100%).
+- Use **Save Settings** to persist your choices to `settings.json` and **Test Sound** to preview the selected file. Settings load automatically at startup.
+
 Use **Start** to launch the selected program and **Stop** to reset the timer back to `00:00`.
 
 ## CLI Usage
@@ -48,3 +53,8 @@ python3 main.py --cli 45 --label Warmup
 ```
 
 This prints the remaining time in the terminal, useful for scripted or quick runs.
+
+## Configuration Files
+
+- `settings.json` records the sound path and volume for notifications.
+- `assets/beep.wav` provides the default beep bundled with the application.
