@@ -1,40 +1,25 @@
-"""Entry point per l'app Workout Timer con supporto CLI, Tabata e Boxing."""
+"""Entry point for the Workout Timer app with CLI and multi-mode GUI."""
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from typing import Iterable, List
 
 import customtkinter as ctk
 
-from timer.base import WorkoutTimer
-
-
-@dataclass
-class TabataConfig:
-    preparation: int
-    work: int
-    rest: int
-    rounds: int
-    cycles: int
-    cooldown: int
-
-
-@dataclass
-class BoxingConfig:
-    work: int
-    rest: int
-    rounds: int
-
-
-@dataclass
-class Phase:
-    label: str
-    duration: int
+from timer.base import (
+    BoxingConfig,
+    BoxingTimer,
+    CountdownTimer,
+    CustomTimer,
+    Phase,
+    TabataConfig,
+    TabataTimer,
+)
 
 
 class WorkoutTimerApp(ctk.CTk):
-    """GUI che permette di avviare un timer Tabata o Boxing configurabile."""
+    """GUI supporting Tabata, Boxing, and Custom timer configurations."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -45,11 +30,15 @@ class WorkoutTimerApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self._after_id: str | None = None
-        self._phases: list[Phase] = []
+        self._phases: List[Phase] = []
         self._current_phase_index: int = 0
         self._remaining: int = 0
 
-        self._entries: dict[str, dict[str, ctk.StringVar]] = {"Tabata": {}, "Boxing": {}}
+        self._entries: dict[str, dict[str, ctk.StringVar]] = {
+            "Tabata": {},
+            "Boxing": {},
+        }
+        self._custom_text: ctk.CTkTextbox | None = None
 
         self._build_widgets()
 
@@ -62,6 +51,9 @@ class WorkoutTimerApp(ctk.CTk):
 
         tab_boxing = self._mode_tabs.add("Boxing")
         self._build_boxing_inputs(tab_boxing)
+
+        tab_custom = self._mode_tabs.add("Custom")
+        self._build_custom_inputs(tab_custom)
 
         self._time_label = ctk.CTkLabel(self, text="00:00", font=("Helvetica", 40))
         self._time_label.pack(padx=20, pady=(10, 10))
@@ -88,7 +80,7 @@ class WorkoutTimerApp(ctk.CTk):
         for row, (label, key, default) in enumerate(inputs):
             ctk.CTkLabel(parent, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="e")
             var = ctk.StringVar(value=default)
-            entry = ctk.CTkEntry(parent, textvariable=var, width=100)
+            entry = ctk.CTkEntry(parent, textvariable=var, width=110)
             entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
             self._entries["Tabata"][key] = var
 
@@ -102,25 +94,34 @@ class WorkoutTimerApp(ctk.CTk):
         for row, (label, key, default) in enumerate(inputs):
             ctk.CTkLabel(parent, text=label).grid(row=row, column=0, padx=5, pady=5, sticky="e")
             var = ctk.StringVar(value=default)
-            entry = ctk.CTkEntry(parent, textvariable=var, width=100)
+            entry = ctk.CTkEntry(parent, textvariable=var, width=110)
             entry.grid(row=row, column=1, padx=5, pady=5, sticky="w")
             self._entries["Boxing"][key] = var
 
+    def _build_custom_inputs(self, parent: ctk.CTkFrame) -> None:
+        info = (
+            "One interval per line. Use 'work, rest' seconds (rest optional).\n"
+            "Example: 45, 15"
+        )
+        ctk.CTkLabel(parent, text=info, justify="left").grid(
+            row=0, column=0, padx=5, pady=(5, 10), sticky="w"
+        )
+        self._custom_text = ctk.CTkTextbox(parent, width=260, height=160)
+        self._custom_text.grid(row=1, column=0, padx=5, pady=5)
+        self._custom_text.insert("1.0", "45, 15\n30, 10\n60, 0")
+
     def start_timer(self) -> None:
-        mode = self._mode_tabs.get()
-
-        if mode == "Tabata":
-            config = self._read_tabata_config()
-            phases = self._build_tabata_phases(config) if config else None
-        else:
-            config = self._read_boxing_config()
-            phases = self._build_boxing_phases(config) if config else None
-
-        if not phases:
-            self._time_label.configure(text="Invalid configuration")
+        try:
+            phases = self._phases_for_selected_mode()
+        except ValueError as error:
+            self._display_error(str(error))
             return
 
-        self._phases = phases
+        if not phases:
+            self._display_error("Nothing to run")
+            return
+
+        self._phases = list(phases)
         self._current_phase_index = 0
         self._start_phase()
 
@@ -130,6 +131,19 @@ class WorkoutTimerApp(ctk.CTk):
         self._current_phase_index = 0
         self._remaining = 0
         self._time_label.configure(text="00:00")
+
+    def _phases_for_selected_mode(self) -> Iterable[Phase]:
+        mode = self._mode_tabs.get()
+        if mode == "Tabata":
+            config = self._read_tabata_config()
+            timer = TabataTimer(config)
+        elif mode == "Boxing":
+            config = self._read_boxing_config()
+            timer = BoxingTimer(config)
+        else:
+            intervals = self._read_custom_intervals()
+            timer = CustomTimer(intervals)
+        return timer.phases
 
     def _start_phase(self) -> None:
         self._cancel_timer()
@@ -162,86 +176,89 @@ class WorkoutTimerApp(ctk.CTk):
 
     def _update_display(self) -> None:
         phase = self._phases[self._current_phase_index]
-        display_time = self._format_time(max(self._remaining, 0))
-        self._time_label.configure(text=f"{phase.label} - {display_time}")
-
-    def _read_tabata_config(self) -> TabataConfig | None:
-        try:
-            entries = self._entries["Tabata"]
-            preparation = self._require_non_negative_int(entries["preparation"])
-            work = self._require_positive_int(entries["work"])
-            rest = self._require_non_negative_int(entries["rest"])
-            rounds = self._require_positive_int(entries["rounds"])
-            cycles = self._require_positive_int(entries["cycles"])
-            cooldown = self._require_non_negative_int(entries["cooldown"])
-        except (ValueError, KeyError):
-            return None
-
-        return TabataConfig(
-            preparation=preparation,
-            work=work,
-            rest=rest,
-            rounds=rounds,
-            cycles=cycles,
-            cooldown=cooldown,
+        minutes, seconds = divmod(max(self._remaining, 0), 60)
+        self._time_label.configure(
+            text=f"{phase.label} - {minutes:02d}:{seconds:02d}"
         )
 
-    def _read_boxing_config(self) -> BoxingConfig | None:
+    def _display_error(self, message: str) -> None:
+        self._cancel_timer()
+        self._time_label.configure(text=message)
+
+    def _read_tabata_config(self) -> TabataConfig:
+        entries = self._entries["Tabata"]
+        return TabataConfig(
+            preparation=self._get_int(entries["preparation"], name="Preparation", allow_zero=True),
+            work=self._get_int(entries["work"], name="Work", positive=True),
+            rest=self._get_int(entries["rest"], name="Rest", allow_zero=True),
+            rounds=self._get_int(entries["rounds"], name="Rounds", positive=True),
+            cycles=self._get_int(entries["cycles"], name="Cycles", positive=True),
+            cooldown=self._get_int(entries["cooldown"], name="Cooldown", allow_zero=True),
+        )
+
+    def _read_boxing_config(self) -> BoxingConfig:
+        entries = self._entries["Boxing"]
+        return BoxingConfig(
+            work=self._get_int(entries["work"], name="Work", positive=True),
+            rest=self._get_int(entries["rest"], name="Rest", allow_zero=True),
+            rounds=self._get_int(entries["rounds"], name="Rounds", positive=True),
+        )
+
+    def _read_custom_intervals(self) -> List[tuple[int, int]]:
+        if self._custom_text is None:
+            raise ValueError("Custom input not available")
+
+        content = self._custom_text.get("1.0", "end").strip()
+        if not content:
+            raise ValueError("Provide at least one interval")
+
+        intervals: List[tuple[int, int]] = []
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.replace(",", " ").split()
+            if len(parts) not in (1, 2):
+                raise ValueError(f"Line {idx}: expected 'work rest' values")
+            try:
+                work = int(parts[0])
+                rest = int(parts[1]) if len(parts) == 2 else 0
+            except ValueError as exc:
+                raise ValueError(f"Line {idx}: invalid integer value") from exc
+            if work <= 0:
+                raise ValueError(f"Line {idx}: work must be > 0")
+            if rest < 0:
+                raise ValueError(f"Line {idx}: rest must be >= 0")
+            intervals.append((work, rest))
+
+        if not intervals:
+            raise ValueError("Provide at least one interval")
+
+        return intervals
+
+    @staticmethod
+    def _get_int(
+        var: ctk.StringVar,
+        *,
+        name: str,
+        positive: bool = False,
+        allow_zero: bool = False,
+    ) -> int:
+        value_str = var.get().strip()
         try:
-            entries = self._entries["Boxing"]
-            work = self._require_positive_int(entries["work"])
-            rest = self._require_non_negative_int(entries["rest"])
-            rounds = self._require_positive_int(entries["rounds"])
-        except (ValueError, KeyError):
-            return None
-
-        return BoxingConfig(work=work, rest=rest, rounds=rounds)
-
-    def _build_tabata_phases(self, config: TabataConfig | None) -> list[Phase] | None:
-        if config is None:
-            return None
-
-        phases: list[Phase] = []
-        if config.preparation > 0:
-            phases.append(Phase("Preparation", config.preparation))
-
-        for cycle in range(1, config.cycles + 1):
-            for round_ in range(1, config.rounds + 1):
-                cycle_suffix = f" Cycle {cycle}" if config.cycles > 1 else ""
-                phases.append(Phase(f"Work Round {round_}{cycle_suffix}", config.work))
-
-                is_last_round = round_ == config.rounds and cycle == config.cycles
-                if config.rest > 0 and not is_last_round:
-                    phases.append(Phase(f"Rest Round {round_}{cycle_suffix}", config.rest))
-
-        if config.cooldown > 0:
-            phases.append(Phase("Cooldown", config.cooldown))
-
-        return phases
-
-    def _build_boxing_phases(self, config: BoxingConfig | None) -> list[Phase] | None:
-        if config is None:
-            return None
-
-        phases: list[Phase] = []
-        for round_ in range(1, config.rounds + 1):
-            phases.append(Phase(f"Work Round {round_}", config.work))
-            is_last_round = round_ == config.rounds
-            if config.rest > 0 and not is_last_round:
-                phases.append(Phase(f"Rest Round {round_}", config.rest))
-
-        return phases
-
-    def _require_positive_int(self, var: ctk.StringVar) -> int:
-        value = int(var.get())
+            value = int(value_str)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+        if positive:
+            if value <= 0:
+                raise ValueError(f"{name} must be > 0")
+            return value
+        if allow_zero:
+            if value < 0:
+                raise ValueError(f"{name} must be >= 0")
+            return value
         if value <= 0:
-            raise ValueError
-        return value
-
-    def _require_non_negative_int(self, var: ctk.StringVar) -> int:
-        value = int(var.get())
-        if value < 0:
-            raise ValueError
+            raise ValueError(f"{name} must be > 0")
         return value
 
     def _cancel_timer(self) -> None:
@@ -249,33 +266,28 @@ class WorkoutTimerApp(ctk.CTk):
             self.after_cancel(self._after_id)
             self._after_id = None
 
-    @staticmethod
-    def _format_time(seconds: int) -> str:
-        minutes, seconds = divmod(seconds, 60)
-        return f"{minutes:02d}:{seconds:02d}"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Workout Timer con interfaccia grafica Tabata/Boxing e modalità CLI opzionale",
+        description="Workout Timer with GUI (Tabata, Boxing, Custom) and optional CLI mode",
     )
     parser.add_argument(
         "seconds",
         nargs="?",
         type=int,
         default=30,
-        help="Durata in secondi del countdown per la modalità CLI (default: 30)",
+        help="Countdown duration in seconds for CLI mode (default: 30)",
     )
     parser.add_argument(
         "--label",
         type=str,
         default=None,
-        help="Etichetta opzionale per identificare il timer in modalità CLI",
+        help="Optional label for the CLI countdown",
     )
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="Esegue il timer in modalità console invece della GUI",
+        help="Run the timer in console mode instead of launching the GUI",
     )
     return parser.parse_args()
 
@@ -288,7 +300,7 @@ def launch_gui() -> None:
 def main() -> None:
     args = parse_args()
     if args.cli:
-        timer = WorkoutTimer(seconds=args.seconds, label=args.label)
+        timer = CountdownTimer(seconds=args.seconds, label=args.label)
         timer.start()
     else:
         launch_gui()
