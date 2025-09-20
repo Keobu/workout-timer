@@ -10,7 +10,7 @@ from typing import Dict, List
 import customtkinter as ctk
 
 from gui.components.control_panel import ControlPanel
-from gui.components.forms import BoxingForm, CustomForm, TabataForm
+from gui.components.forms import BoxingForm, CustomForm, TabataForm, TopicsForm
 from gui.components.navigation import NavigationBar
 from gui.components.timer_display import TimerDisplay
 from gui.settings import SettingsPanel, SettingsStore, SoundPlayer, SoundSettings
@@ -28,7 +28,7 @@ PHASE_COLOR_BG = {
 
 
 class WorkoutTimerApp(ctk.CTk):
-    MODES = ("tabata", "boxing", "custom", "settings")
+    MODES = ("tabata", "boxing", "custom", "topics", "settings")
 
     def __init__(self, *, base_dir: Path) -> None:
         super().__init__()
@@ -65,6 +65,7 @@ class WorkoutTimerApp(ctk.CTk):
             "tabata": self._icons_dir / "tabata.png",
             "boxing": self._icons_dir / "boxing.png",
             "custom": self._icons_dir / "custom.png",
+            "topics": self._icons_dir / "topics.png",
             "settings": self._icons_dir / "settings.png",
         }
         self._nav = NavigationBar(
@@ -96,6 +97,7 @@ class WorkoutTimerApp(ctk.CTk):
             "tabata": TabataForm(self._form_section),
             "boxing": BoxingForm(self._form_section),
             "custom": CustomForm(self._form_section),
+            "topics": TopicsForm(self._form_section),
         }
         for form in self._forms.values():
             form.bind_on_change(self._update_totals)
@@ -199,6 +201,14 @@ class WorkoutTimerApp(ctk.CTk):
             self._settings_panel.pack(fill="both", expand=True, padx=8, pady=8)
             self._summary_frame.pack_forget()
             self._control_panel.set_state(running=False)
+        elif mode == "topics":
+            self._timer_display.set_phase("idle", "Topics")
+            self._timer_display.set_time("00:00")
+            form = self._forms[mode]
+            form.pack(fill="both", expand=True, padx=8, pady=8)
+            self._summary_frame.pack_forget()
+            self._settings_panel.pack_forget()
+            self._control_panel.set_state(running=False)
         else:
             form = self._forms[mode]
             form.pack(fill="both", expand=True, padx=8, pady=8)
@@ -216,7 +226,7 @@ class WorkoutTimerApp(ctk.CTk):
     # Timer control ------------------------------------------------------
 
     def _on_start(self) -> None:
-        if self._active_mode == "settings":
+        if self._active_mode in ("settings", "topics"):
             return
         if self._running:
             return
@@ -367,7 +377,7 @@ class WorkoutTimerApp(ctk.CTk):
     # Totals -------------------------------------------------------------
 
     def _update_totals(self) -> None:
-        if self._active_mode == "settings":
+        if self._active_mode in ("settings", "topics"):
             self._work_total_label.configure(text="Work total: --")
             self._rest_total_label.configure(text="Recovery total: --")
             self._session_length_label.configure(text="Session length: --")

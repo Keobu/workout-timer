@@ -161,3 +161,81 @@ class CustomForm(BaseModeForm):
     def estimate_phases(self) -> List[Phase]:
         intervals = self.get_intervals()
         return CustomTimer(intervals).phases
+
+
+class TopicsForm(BaseModeForm):
+    """Topics/educational page for workout information."""
+    
+    def __init__(self, master: ctk.CTkBaseClass) -> None:
+        super().__init__(master)
+        self._build()
+    
+    def _build(self) -> None:
+        # Title
+        title = ctk.CTkLabel(
+            self, 
+            text="Workout Topics & Information", 
+            font=("SF Pro Text", 24, "bold")
+        )
+        title.pack(pady=(20, 30))
+        
+        # Create a scrollable frame for content
+        self._scrollable_frame = ctk.CTkScrollableFrame(self)
+        self._scrollable_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # Add topic sections
+        self._add_topic_section("Tabata Training", [
+            "• High-intensity interval training protocol",
+            "• 20 seconds of intense exercise, 10 seconds rest",
+            "• Usually performed for 8 rounds (4 minutes total)",
+            "• Improves both aerobic and anaerobic fitness",
+            "• Originally developed by Dr. Izumi Tabata"
+        ])
+        
+        self._add_topic_section("Boxing Training", [
+            "• Traditional boxing round structure",
+            "• Typically 3-minute rounds with 1-minute rest",
+            "• Excellent for cardiovascular fitness",
+            "• Improves coordination and reflexes",
+            "• Can be adapted for different fitness levels"
+        ])
+        
+        self._add_topic_section("Custom Workouts", [
+            "• Create your own interval patterns",
+            "• Mix different work and rest periods",
+            "• Ideal for sport-specific training",
+            "• Can target specific energy systems",
+            "• Allows for progressive overload"
+        ])
+        
+        self._add_topic_section("General Tips", [
+            "• Always warm up before intense exercise",
+            "• Stay hydrated throughout your workout",
+            "• Listen to your body and rest when needed",
+            "• Gradually increase intensity over time",
+            "• Cool down properly after exercise"
+        ])
+    
+    def _add_topic_section(self, title: str, points: list[str]) -> None:
+        # Section title
+        section_title = ctk.CTkLabel(
+            self._scrollable_frame,
+            text=title,
+            font=("SF Pro Text", 18, "bold"),
+            anchor="w"
+        )
+        section_title.pack(fill="x", pady=(20, 10), padx=10)
+        
+        # Section content
+        for point in points:
+            point_label = ctk.CTkLabel(
+                self._scrollable_frame,
+                text=point,
+                font=("SF Pro Text", 14),
+                anchor="w"
+            )
+            point_label.pack(fill="x", pady=2, padx=20)
+    
+    def estimate_phases(self) -> List[Phase]:
+        # Topics page doesn't have phases to estimate
+        return []
